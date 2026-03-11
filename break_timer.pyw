@@ -3,6 +3,7 @@ Break Timer - 20 minute work break reminder
 - Runs in system tray
 - Pauses automatically when screen is locked
 - Pops up a reminder when 20 minutes is up
+- REST API on http://localhost:5050
 """
 
 import threading
@@ -12,18 +13,23 @@ from tkinter import font as tkfont
 import ctypes
 from ctypes import wintypes
 import sys
+import logging
+import os
 from PIL import Image, ImageDraw
 import pystray
+from flask import Flask, jsonify
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORK_MINUTES = 20
 WORK_SECONDS = WORK_MINUTES * 60
+API_PORT = 5050
 
 # ── State ─────────────────────────────────────────────────────────────────────
 elapsed = 0
 paused = False
 running = True
-lock_check_interval = 5  # seconds between lock checks
+break_showing = False
+icon_ref = [None]  # set once the tray icon is created
 
 
 # ── Screen lock detection (Windows) ───────────────────────────────────────────
@@ -41,6 +47,10 @@ def is_screen_locked():
 # ── Popup window ──────────────────────────────────────────────────────────────
 def show_break_popup(icon):
     """Show a full-attention break reminder popup."""
+    global break_showing
+    break_showing = True
+    log.info("Break popup shown")
+
     popup = tk.Tk()
     popup.title("Break Time!")
     popup.configure(bg="#0f0f0f")
@@ -83,9 +93,12 @@ def show_break_popup(icon):
     dismissed = [False]
 
     def dismiss():
+        global break_showing
         if dismissed[0]:
             return
         dismissed[0] = True
+        break_showing = False
+        log.info("Break popup dismissed")
         popup.destroy()
         reset_timer(icon)
 
@@ -166,6 +179,7 @@ def create_icon_image(color="#2ecc71"):
 def on_pause_resume(icon, item):
     global paused
     paused = not paused
+    log.info("Timer %s", "paused" if paused else "resumed")
     icon.icon = create_icon_image("#e67e22" if paused else "#2ecc71")
     icon.title = "Break Timer — Paused" if paused else "Break Timer"
 
@@ -196,6 +210,69 @@ def build_menu():
     )
 
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+_log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "break_timer.log")
+logging.basicConfig(
+    filename=_log_file,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("break_timer")
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# ── REST API ──────────────────────────────────────────────────────────────────
+api_app = Flask(__name__)
+
+
+@api_app.route("/status")
+def api_status():
+    remaining = max(0, WORK_SECONDS - elapsed)
+    return jsonify({
+        "paused": paused,
+        "break_in_progress": break_showing,
+        "remaining_seconds": remaining,
+        "remaining": f"{remaining // 60:02d}:{remaining % 60:02d}",
+        "elapsed_seconds": elapsed,
+    })
+
+
+@api_app.route("/take-break", methods=["POST"])
+def api_take_break():
+    global elapsed
+    elapsed = 0
+    icon = icon_ref[0]
+    threading.Thread(target=show_break_popup, args=(icon,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@api_app.route("/reset", methods=["POST"])
+def api_reset():
+    reset_timer(icon_ref[0])
+    return jsonify({"ok": True})
+
+
+@api_app.route("/pause", methods=["POST"])
+def api_pause():
+    global paused
+    if not paused:
+        on_pause_resume(icon_ref[0], None)
+    return jsonify({"ok": True, "paused": paused})
+
+
+@api_app.route("/resume", methods=["POST"])
+def api_resume():
+    global paused
+    if paused:
+        on_pause_resume(icon_ref[0], None)
+    return jsonify({"ok": True, "paused": paused})
+
+
+def start_api():
+    log.info("REST API starting on 0.0.0.0:%d", API_PORT)
+    api_app.run(host="0.0.0.0", port=API_PORT)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     img = create_icon_image("#2ecc71")
@@ -205,10 +282,15 @@ def main():
         title=f"Break Timer — {WORK_MINUTES:02d}:00 remaining",
         menu=build_menu(),
     )
+    icon_ref[0] = icon
+
+    log.info("Break Timer started")
 
     # Start timer thread
-    t = threading.Thread(target=timer_loop, args=(icon,), daemon=True)
-    t.start()
+    threading.Thread(target=timer_loop, args=(icon,), daemon=True).start()
+
+    # Start REST API thread
+    threading.Thread(target=start_api, daemon=True).start()
 
     icon.run()
 
