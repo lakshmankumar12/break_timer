@@ -174,6 +174,12 @@ def on_reset(icon, item):
     reset_timer(icon)
 
 
+def on_take_break(icon, item):
+    global elapsed
+    elapsed = 0
+    threading.Thread(target=show_break_popup, args=(icon,), daemon=True).start()
+
+
 def on_quit(icon, item):
     global running
     running = False
@@ -182,6 +188,7 @@ def on_quit(icon, item):
 
 def build_menu():
     return pystray.Menu(
+        pystray.MenuItem("Take break now", on_take_break),
         pystray.MenuItem("Pause / Resume", on_pause_resume),
         pystray.MenuItem("Reset Timer", on_reset),
         pystray.Menu.SEPARATOR,
