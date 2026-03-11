@@ -49,7 +49,7 @@ def show_break_popup(icon):
     popup.resizable(False, False)
 
     # Center the window
-    w, h = 480, 300
+    w, h = 480, 320
     sw = popup.winfo_screenwidth()
     sh = popup.winfo_screenheight()
     x = (sw - w) // 2
@@ -73,9 +73,19 @@ def show_break_popup(icon):
                          font=("Segoe UI", 12),
                          bg="#0f0f0f", fg="#888888",
                          justify="center")
-    sub_label.pack(pady=(0, 20))
+    sub_label.pack(pady=(0, 10))
+
+    countdown_label = tk.Label(frame, text="Auto-closing in 1:00",
+                               font=("Segoe UI", 10),
+                               bg="#0f0f0f", fg="#555555")
+    countdown_label.pack(pady=(0, 10))
+
+    dismissed = [False]
 
     def dismiss():
+        if dismissed[0]:
+            return
+        dismissed[0] = True
         popup.destroy()
         reset_timer(icon)
 
@@ -87,6 +97,20 @@ def show_break_popup(icon):
                     command=dismiss)
     btn.pack()
 
+    # 1-minute auto-close countdown
+    remaining = [60]
+
+    def tick():
+        remaining[0] -= 1
+        mins = remaining[0] // 60
+        secs = remaining[0] % 60
+        countdown_label.config(text=f"Auto-closing in {mins}:{secs:02d}")
+        if remaining[0] <= 0:
+            dismiss()
+        else:
+            popup.after(1000, tick)
+
+    popup.after(1000, tick)
     popup.mainloop()
 
 
