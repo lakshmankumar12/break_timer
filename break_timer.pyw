@@ -58,9 +58,9 @@ def is_screen_locked():
         locked = True
 
     if locked and not screen_locked:
-        log.info("Screen locked")
+        log.info("Screen locked (elapsed=%ds)", elapsed)
     elif not locked and screen_locked:
-        log.info("Screen unlocked")
+        log.info("Screen unlocked (elapsed=%ds)", elapsed)
 
     screen_locked = locked
     return locked
@@ -115,14 +115,12 @@ def show_break_popup(icon):
     dismissed = [False]
 
     def dismiss():
-        global break_showing
         if dismissed[0]:
             return
         dismissed[0] = True
-        break_showing = False
-        log.info("Break popup dismissed")
         popup.destroy()
-        reset_timer(icon)
+
+    popup.protocol("WM_DELETE_WINDOW", dismiss)
 
     btn = tk.Button(frame, text="  Got it, starting fresh  ",
                     font=("Segoe UI", 11, "bold"),
@@ -147,6 +145,14 @@ def show_break_popup(icon):
 
     popup.after(1000, tick)
     popup.mainloop()
+
+    # Single place to reset state — covers dismiss, WM_DELETE_WINDOW, and sleep/lock
+    break_showing = False
+    if dismissed[0]:
+        log.info("Break popup dismissed")
+    else:
+        log.info("Break popup closed unexpectedly (sleep/lock?)")
+    reset_timer(icon)
 
 
 # ── Timer logic ───────────────────────────────────────────────────────────────
