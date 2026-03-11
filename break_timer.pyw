@@ -41,13 +41,14 @@ paused = False
 running = True
 break_showing = False
 screen_locked = False
+screen_locked_at = None   # epoch when screen was locked
 icon_ref = [None]  # set once the tray icon is created
 
 
 # ── Screen lock detection (Windows) ───────────────────────────────────────────
 def is_screen_locked():
     """Returns True if the Windows workstation is locked. Updates screen_locked global and logs transitions."""
-    global screen_locked
+    global screen_locked, screen_locked_at, elapsed
     user32 = ctypes.windll.User32
     # OpenInputDesktop returns NULL when the screen is locked
     hDesk = user32.OpenInputDesktop(0, False, 0x0100)
@@ -58,9 +59,15 @@ def is_screen_locked():
         locked = True
 
     if locked and not screen_locked:
+        screen_locked_at = time.time()
         log.info("Screen locked (elapsed=%ds)", elapsed)
     elif not locked and screen_locked:
-        log.info("Screen unlocked (elapsed=%ds)", elapsed)
+        lock_duration = time.time() - screen_locked_at
+        log.info("Screen unlocked (elapsed=%ds, locked_for=%.0fs)", elapsed, lock_duration)
+        if lock_duration >= WORK_SECONDS:
+            elapsed = 0
+            log.info("Lock duration >= %ds, resetting timer", WORK_SECONDS)
+        screen_locked_at = None
 
     screen_locked = locked
     return locked
