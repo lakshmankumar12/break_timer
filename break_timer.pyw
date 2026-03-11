@@ -256,12 +256,16 @@ api_app = Flask(__name__)
 @api_app.route("/status")
 def api_status():
     remaining = max(0, WORK_SECONDS - elapsed)
+    lock_epoch = int(screen_locked_at) if screen_locked_at else 0
+    lock_fmt = time.strftime("%d-%b-%Y %H:%M:%S", time.localtime(screen_locked_at)) if screen_locked_at else "0"
     return jsonify({
         "paused": paused,
         "break_in_progress": break_showing,
         "remaining_seconds": remaining,
         "remaining": f"{remaining // 60:02d}:{remaining % 60:02d}",
         "elapsed_seconds": elapsed,
+        "last_screen_lock_epoch": lock_epoch,
+        "last_screen_lock_time": lock_fmt,
     })
 
 
