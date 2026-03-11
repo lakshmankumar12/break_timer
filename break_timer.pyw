@@ -24,24 +24,46 @@ WORK_MINUTES = 20
 WORK_SECONDS = WORK_MINUTES * 60
 API_PORT = 5050
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+_log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "break_timer.log")
+logging.basicConfig(
+    filename=_log_file,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("break_timer")
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
 # ── State ─────────────────────────────────────────────────────────────────────
 elapsed = 0
 paused = False
 running = True
 break_showing = False
+screen_locked = False
 icon_ref = [None]  # set once the tray icon is created
 
 
 # ── Screen lock detection (Windows) ───────────────────────────────────────────
 def is_screen_locked():
-    """Returns True if the Windows workstation is locked."""
+    """Returns True if the Windows workstation is locked. Updates screen_locked global and logs transitions."""
+    global screen_locked
     user32 = ctypes.windll.User32
     # OpenInputDesktop returns NULL when the screen is locked
     hDesk = user32.OpenInputDesktop(0, False, 0x0100)
     if hDesk:
         user32.CloseDesktop(hDesk)
-        return False
-    return True
+        locked = False
+    else:
+        locked = True
+
+    if locked and not screen_locked:
+        log.info("Screen locked")
+    elif not locked and screen_locked:
+        log.info("Screen unlocked")
+
+    screen_locked = locked
+    return locked
 
 
 # ── Popup window ──────────────────────────────────────────────────────────────
@@ -148,6 +170,8 @@ def timer_loop(icon):
     while running:
         time.sleep(1)
 
+        update_tray_title(icon)
+
         if is_screen_locked():
             # Screen is locked — pause silently
             continue
@@ -155,8 +179,10 @@ def timer_loop(icon):
         if paused:
             continue
 
+        if break_showing:
+            continue
+
         elapsed += 1
-        update_tray_title(icon)
 
         if elapsed >= WORK_SECONDS:
             elapsed = 0
@@ -209,17 +235,6 @@ def build_menu():
         pystray.MenuItem("Quit", on_quit),
     )
 
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-_log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "break_timer.log")
-logging.basicConfig(
-    filename=_log_file,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("break_timer")
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 # ── REST API ──────────────────────────────────────────────────────────────────
 api_app = Flask(__name__)
