@@ -23,6 +23,7 @@ from flask import Flask, jsonify
 WORK_MINUTES = 20
 WORK_SECONDS = WORK_MINUTES * 60
 API_PORT = 5050
+SLEEP_DETECT_GAP = 10
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "break_timer.log")
@@ -180,8 +181,20 @@ def update_tray_title(icon):
 def timer_loop(icon):
     global elapsed, paused, running
 
+    last_tick = time.time()
+
     while running:
         time.sleep(1)
+
+        now = time.time()
+        gap = now - last_tick
+        last_tick = now
+
+        if gap > SLEEP_DETECT_GAP:
+            log.info("Sleep/wake detected (gap=%.0fs)", gap)
+            if gap >= WORK_SECONDS:
+                elapsed = 0
+                log.info("Sleep duration >= %ds, resetting timer", WORK_SECONDS)
 
         update_tray_title(icon)
 
