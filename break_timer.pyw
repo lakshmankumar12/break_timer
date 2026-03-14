@@ -15,6 +15,7 @@ from ctypes import wintypes
 import sys
 import logging
 import os
+from datetime import datetime, timezone
 from PIL import Image, ImageDraw
 import pystray
 from flask import Flask, jsonify
@@ -44,7 +45,8 @@ break_showing = False
 screen_locked = False
 screen_locked_at = None   # epoch when screen was locked
 last_wake_at = None       # epoch of last sleep/wake detection
-icon_ref = [None]  # set once the tray icon is created
+icon_ref = [None]    # set once the tray icon is created
+overlay_ref = [None] # set once the taskbar overlay is created
 
 
 # ── Screen lock detection (Windows) ───────────────────────────────────────────
@@ -218,6 +220,89 @@ def timer_loop(icon):
             threading.Thread(target=show_break_popup, args=(icon,), daemon=True).start()
 
 
+# ── Taskbar overlay ───────────────────────────────────────────────────────────
+def get_taskbar_info():
+    class APPBARDATA(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("hWnd",   wintypes.HWND),
+            ("uCallbackMessage", wintypes.UINT),
+            ("uEdge",  wintypes.UINT),
+            ("rc",     wintypes.RECT),
+            ("lParam", wintypes.LPARAM),
+        ]
+    abd = APPBARDATA()
+    abd.cbSize = ctypes.sizeof(APPBARDATA)
+    ctypes.windll.shell32.SHAppBarMessage(5, ctypes.byref(abd))
+    return {'left': abd.rc.left, 'top': abd.rc.top,
+            'right': abd.rc.right, 'bottom': abd.rc.bottom}
+
+
+def get_systray_position():
+    hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+    if hwnd:
+        tray_notify = ctypes.windll.user32.FindWindowExW(hwnd, None, "TrayNotifyWnd", None)
+        if tray_notify:
+            rect = wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(tray_notify, ctypes.byref(rect))
+            return {'left': rect.left, 'top': rect.top,
+                    'right': rect.right, 'bottom': rect.bottom}
+    return None
+
+
+def run_overlay():
+    root = tk.Tk()
+    root.title("Break Timer Overlay")
+    root.overrideredirect(True)
+    root.attributes('-topmost', True)
+    root.attributes('-alpha', 0.95)
+    root.configure(bg='#1e1e1e')
+    overlay_ref[0] = root
+
+    label = tk.Label(root, text="", font=("Segoe UI", 10, "bold"),
+                     fg='#00d4ff', bg='#1e1e1e', padx=10, pady=4)
+    label.pack()
+
+    def position_window():
+        systray = get_systray_position()
+        root.update_idletasks()
+        w = root.winfo_width()
+        h = root.winfo_height()
+        if systray:
+            x = systray['left'] - w - 5
+            y = systray['top'] + (systray['bottom'] - systray['top'] - h) // 2
+        else:
+            taskbar = get_taskbar_info()
+            x = taskbar['right'] - w - 200
+            y = taskbar['top'] + (taskbar['bottom'] - taskbar['top'] - h) // 2
+        root.geometry(f"+{x}+{y}")
+
+    was_hidden = [False]
+
+    def update():
+        if break_showing:
+            if not was_hidden[0]:
+                root.withdraw()
+                was_hidden[0] = True
+        else:
+            if was_hidden[0]:
+                root.deiconify()
+                position_window()
+                was_hidden[0] = False
+            utc = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            remaining = max(0, WORK_SECONDS - elapsed)
+            mins = remaining // 60
+            secs = remaining % 60
+            pause_str = " (P)" if paused else ""
+            label.config(text=f"{utc} UTC  {mins:02d}:{secs:02d}{pause_str}")
+        root.after(1000, update)
+
+    update()
+    position_window()
+    root.mainloop()
+    log.info("Overlay mainloop exited")
+
+
 # ── Tray icon ─────────────────────────────────────────────────────────────────
 def create_icon_image(color="#2ecc71"):
     """Draw a simple circle icon."""
@@ -324,6 +409,18 @@ def start_api():
     api_app.run(host="0.0.0.0", port=API_PORT)
 
 
+# ── Single instance ───────────────────────────────────────────────────────────
+def acquire_single_instance_mutex():
+    """Returns a mutex handle if this is the only running instance, else None."""
+    ERROR_ALREADY_EXISTS = 183
+    handle = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\BreakTimer_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        return None
+    return handle
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     img = create_icon_image("#2ecc71")
@@ -343,8 +440,21 @@ def main():
     # Start REST API thread
     threading.Thread(target=start_api, daemon=True).start()
 
+    # Start taskbar overlay thread
+    threading.Thread(target=run_overlay, daemon=True).start()
+
     icon.run()
 
 
 if __name__ == "__main__":
-    main()
+    _mutex = acquire_single_instance_mutex()
+    if _mutex is None:
+        log.warning("Another instance is already running — exiting")
+        _root = tk.Tk()
+        _root.withdraw()
+        import tkinter.messagebox as mb
+        mb.showwarning("Already Running", "Break Timer is already running.")
+        _root.destroy()
+    else:
+        main()
+        ctypes.windll.kernel32.CloseHandle(_mutex)
