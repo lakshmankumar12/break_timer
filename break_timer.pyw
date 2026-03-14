@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw
 import pystray
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 # ── Config ────────────────────────────────────────────────────────────────────
 WORK_MINUTES = 20
@@ -124,6 +124,7 @@ def show_break_popup(icon):
     countdown_label.pack(pady=(0, 10))
 
     dismissed = [False]
+    snoozed = [False]
 
     def dismiss():
         if dismissed[0]:
@@ -131,15 +132,31 @@ def show_break_popup(icon):
         dismissed[0] = True
         popup.destroy()
 
+    def snooze():
+        if dismissed[0]:
+            return
+        snoozed[0] = True
+        dismissed[0] = True
+        popup.destroy()
+
     popup.protocol("WM_DELETE_WINDOW", dismiss)
 
-    btn = tk.Button(frame, text="  Got it, starting fresh  ",
-                    font=("Segoe UI", 11, "bold"),
-                    bg="#2ecc71", fg="#0f0f0f",
-                    relief="flat", cursor="hand2",
-                    padx=16, pady=8,
-                    command=dismiss)
-    btn.pack()
+    btn_frame = tk.Frame(frame, bg="#0f0f0f")
+    btn_frame.pack()
+
+    tk.Button(btn_frame, text="  Got it, starting fresh  ",
+              font=("Segoe UI", 11, "bold"),
+              bg="#2ecc71", fg="#0f0f0f",
+              relief="flat", cursor="hand2",
+              padx=16, pady=8,
+              command=dismiss).pack(side="left", padx=(0, 10))
+
+    tk.Button(btn_frame, text="  5 more mins  ",
+              font=("Segoe UI", 11),
+              bg="#e67e22", fg="#0f0f0f",
+              relief="flat", cursor="hand2",
+              padx=16, pady=8,
+              command=snooze).pack(side="left")
 
     # 1-minute auto-close countdown
     remaining = [60]
@@ -159,11 +176,15 @@ def show_break_popup(icon):
 
     # Single place to reset state — covers dismiss, WM_DELETE_WINDOW, and sleep/lock
     break_showing = False
-    if dismissed[0]:
+    if snoozed[0]:
+        log.info("Break popup snoozed (5 min)")
+        elapsed = WORK_SECONDS - 5 * 60
+    elif dismissed[0]:
         log.info("Break popup dismissed")
+        reset_timer(icon)
     else:
         log.info("Break popup closed unexpectedly (sleep/lock?)")
-    reset_timer(icon)
+        reset_timer(icon)
 
 
 # ── Timer logic ───────────────────────────────────────────────────────────────
@@ -353,6 +374,22 @@ def build_menu():
 api_app = Flask(__name__)
 
 
+@api_app.route("/help")
+def api_help():
+    lines = [
+        "GET  /help                   List all APIs",
+        "GET  /status                 Show current timer state",
+        "POST /take-break             Trigger a break immediately",
+        "POST /reset                  Reset the timer to 0",
+        "POST /pause                  Pause the timer",
+        "POST /resume                 Resume the timer",
+        "POST /advance?value=2        Advance break by N minutes (default 2)",
+        "POST /delay?value=2          Delay break by N minutes (default 2)",
+        "POST /redraw                 Bring taskbar overlay back to front",
+    ]
+    return "\n".join(lines), 200, {"Content-Type": "text/plain"}
+
+
 @api_app.route("/status")
 def api_status():
     remaining = max(0, WORK_SECONDS - elapsed)
@@ -402,6 +439,39 @@ def api_resume():
     if paused:
         on_pause_resume(icon_ref[0], None)
     return jsonify({"ok": True, "paused": paused})
+
+
+@api_app.route("/advance", methods=["POST"])
+def api_advance():
+    global elapsed
+    if paused or break_showing:
+        log.info("/advance no-op (paused=%s break_showing=%s)", paused, break_showing)
+        return jsonify({"ok": False, "reason": "paused or break in progress"})
+    mins = int(request.args.get("value", 2))
+    elapsed = min(elapsed + mins * 60, WORK_SECONDS)
+    log.info("/advance %d min (elapsed=%ds)", mins, elapsed)
+    return jsonify({"ok": True, "elapsed_seconds": elapsed})
+
+
+@api_app.route("/delay", methods=["POST"])
+def api_delay():
+    global elapsed
+    if paused or break_showing:
+        log.info("/delay no-op (paused=%s break_showing=%s)", paused, break_showing)
+        return jsonify({"ok": False, "reason": "paused or break in progress"})
+    mins = int(request.args.get("value", 2))
+    elapsed = max(elapsed - mins * 60, 0)
+    log.info("/delay %d min (elapsed=%ds)", mins, elapsed)
+    return jsonify({"ok": True, "elapsed_seconds": elapsed})
+
+
+@api_app.route("/redraw", methods=["POST"])
+def api_redraw():
+    root = overlay_ref[0]
+    if root:
+        root.after(0, lambda: (root.attributes('-topmost', True), root.lift()))
+        log.info("Overlay redraw requested")
+    return jsonify({"ok": True})
 
 
 def start_api():
