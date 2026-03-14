@@ -43,6 +43,7 @@ running = True
 break_showing = False
 screen_locked = False
 screen_locked_at = None   # epoch when screen was locked
+last_wake_at = None       # epoch of last sleep/wake detection
 icon_ref = [None]  # set once the tray icon is created
 
 
@@ -179,7 +180,7 @@ def update_tray_title(icon):
 
 
 def timer_loop(icon):
-    global elapsed, paused, running
+    global elapsed, paused, running, last_wake_at
 
     last_tick = time.time()
 
@@ -191,6 +192,7 @@ def timer_loop(icon):
         last_tick = now
 
         if gap > SLEEP_DETECT_GAP:
+            last_wake_at = now
             log.info("Sleep/wake detected (gap=%.0fs)", gap)
             if gap >= WORK_SECONDS:
                 elapsed = 0
@@ -271,6 +273,8 @@ def api_status():
     remaining = max(0, WORK_SECONDS - elapsed)
     lock_epoch = int(screen_locked_at) if screen_locked_at else 0
     lock_fmt = time.strftime("%d-%b-%Y %H:%M:%S", time.localtime(screen_locked_at)) if screen_locked_at else "0"
+    wake_epoch = int(last_wake_at) if last_wake_at else 0
+    wake_fmt = time.strftime("%d-%b-%Y %H:%M:%S", time.localtime(last_wake_at)) if last_wake_at else "0"
     return jsonify({
         "paused": paused,
         "break_in_progress": break_showing,
@@ -279,6 +283,8 @@ def api_status():
         "elapsed_seconds": elapsed,
         "last_screen_lock_epoch": lock_epoch,
         "last_screen_lock_time": lock_fmt,
+        "last_wake_epoch": wake_epoch,
+        "last_wake_time": wake_fmt,
     })
 
 
