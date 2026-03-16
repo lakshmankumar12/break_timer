@@ -25,6 +25,7 @@ WORK_MINUTES = 20
 WORK_SECONDS = WORK_MINUTES * 60
 API_PORT = 5050
 SLEEP_DETECT_GAP = 10
+AWAY_RESET_SECONDS = 60  # reset timer if away (locked/asleep) for this long
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "break_timer.log")
@@ -68,9 +69,9 @@ def is_screen_locked():
     elif not locked and screen_locked:
         lock_duration = time.time() - screen_locked_at
         log.info("Screen unlocked (elapsed=%ds, locked_for=%.0fs)", elapsed, lock_duration)
-        if lock_duration >= WORK_SECONDS:
+        if lock_duration >= AWAY_RESET_SECONDS:
             elapsed = 0
-            log.info("Lock duration >= %ds, resetting timer", WORK_SECONDS)
+            log.info("Lock duration %.0fs >= %ds, resetting timer", lock_duration, AWAY_RESET_SECONDS)
         screen_locked_at = None
 
     screen_locked = locked
@@ -80,7 +81,7 @@ def is_screen_locked():
 # ── Popup window ──────────────────────────────────────────────────────────────
 def show_break_popup(icon):
     """Show a full-attention break reminder popup."""
-    global break_showing
+    global break_showing, elapsed
     break_showing = True
     log.info("Break popup shown")
 
@@ -217,9 +218,9 @@ def timer_loop(icon):
         if gap > SLEEP_DETECT_GAP:
             last_wake_at = now
             log.info("Sleep/wake detected (gap=%.0fs)", gap)
-            if gap >= WORK_SECONDS:
+            if gap >= AWAY_RESET_SECONDS:
                 elapsed = 0
-                log.info("Sleep duration >= %ds, resetting timer", WORK_SECONDS)
+                log.info("Sleep duration %.0fs >= %ds, resetting timer", gap, AWAY_RESET_SECONDS)
 
         update_tray_title(icon)
 
@@ -310,12 +311,15 @@ def run_overlay():
                 root.deiconify()
                 position_window()
                 was_hidden[0] = False
-            utc = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            utc = datetime.now(timezone.utc)
             remaining = max(0, WORK_SECONDS - elapsed)
             mins = remaining // 60
             secs = remaining % 60
             pause_str = " (P)" if paused else ""
-            label.config(text=f"{utc} UTC  {mins:02d}:{secs:02d}{pause_str}")
+            label.config(text=f"{utc.strftime('%H:%M:%S')} UTC  {mins:02d}:{secs:02d}{pause_str}")
+            if utc.second == 0:
+                root.attributes('-topmost', True)
+                root.lift()
         root.after(1000, update)
 
     update()
@@ -386,6 +390,7 @@ def api_help():
         "POST /advance?value=2        Advance break by N minutes (default 2)",
         "POST /delay?value=2          Delay break by N minutes (default 2)",
         "POST /redraw                 Bring taskbar overlay back to front",
+        "POST /exit                   Quit the application",
     ]
     return "\n".join(lines), 200, {"Content-Type": "text/plain"}
 
@@ -463,6 +468,13 @@ def api_delay():
     elapsed = max(elapsed - mins * 60, 0)
     log.info("/delay %d min (elapsed=%ds)", mins, elapsed)
     return jsonify({"ok": True, "elapsed_seconds": elapsed})
+
+
+@api_app.route("/exit", methods=["POST"])
+def api_exit():
+    log.info("Exit requested via API")
+    on_quit(icon_ref[0], None)
+    return jsonify({"ok": True})
 
 
 @api_app.route("/redraw", methods=["POST"])
