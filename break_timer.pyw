@@ -364,11 +364,24 @@ def on_quit(icon, item):
     icon.stop()
 
 
+def on_redraw(icon, item):
+    root = overlay_ref[0]
+    if root:
+        def _bring_to_top():
+            root.attributes('-topmost', True)
+            root.lift()
+        _bring_to_top()
+        root.after(1000, _bring_to_top)
+        root.after(5000, _bring_to_top)
+
+
 def build_menu():
     return pystray.Menu(
         pystray.MenuItem("Take break now", on_take_break),
         pystray.MenuItem("Pause / Resume", on_pause_resume),
         pystray.MenuItem("Reset Timer", on_reset),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Redraw Overlay", on_redraw),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", on_quit),
     )
