@@ -1,7 +1,6 @@
 """
 Break Timer - 20 minute work break reminder
 - Runs in system tray
-- Pauses automatically when screen is locked
 - Pops up a reminder when 20 minutes is up
 - REST API on http://localhost:5050
 """
@@ -43,39 +42,10 @@ elapsed = 0
 paused = False
 running = True
 break_showing = False
-screen_locked = False
-screen_locked_at = None   # epoch when screen was locked
 last_wake_at = None       # epoch of last sleep/wake detection
+last_elapsed_tick_at = None  # wall-clock time of last elapsed increment
 icon_ref = [None]    # set once the tray icon is created
 overlay_ref = [None] # set once the taskbar overlay is created
-
-
-# ── Screen lock detection (Windows) ───────────────────────────────────────────
-def is_screen_locked():
-    """Returns True if the Windows workstation is locked. Updates screen_locked global and logs transitions."""
-    global screen_locked, screen_locked_at, elapsed
-    user32 = ctypes.windll.User32
-    # OpenInputDesktop returns NULL when the screen is locked
-    hDesk = user32.OpenInputDesktop(0, False, 0x0100)
-    if hDesk:
-        user32.CloseDesktop(hDesk)
-        locked = False
-    else:
-        locked = True
-
-    if locked and not screen_locked:
-        screen_locked_at = time.time()
-        log.info("Screen locked (elapsed=%ds)", elapsed)
-    elif not locked and screen_locked:
-        lock_duration = time.time() - screen_locked_at
-        log.info("Screen unlocked (elapsed=%ds, locked_for=%.0fs)", elapsed, lock_duration)
-        if lock_duration >= AWAY_RESET_SECONDS:
-            elapsed = 0
-            log.info("Lock duration %.0fs >= %ds, resetting timer", lock_duration, AWAY_RESET_SECONDS)
-        screen_locked_at = None
-
-    screen_locked = locked
-    return locked
 
 
 # ── Popup window ──────────────────────────────────────────────────────────────
@@ -190,8 +160,9 @@ def show_break_popup(icon):
 
 # ── Timer logic ───────────────────────────────────────────────────────────────
 def reset_timer(icon=None):
-    global elapsed
+    global elapsed, last_elapsed_tick_at
     elapsed = 0
+    last_elapsed_tick_at = time.time()
     if icon:
         update_tray_title(icon)
 
@@ -204,9 +175,10 @@ def update_tray_title(icon):
 
 
 def timer_loop(icon):
-    global elapsed, paused, running, last_wake_at
+    global elapsed, paused, running, last_wake_at, last_elapsed_tick_at
 
     last_tick = time.time()
+    last_elapsed_tick_at = last_tick
 
     while running:
         time.sleep(1)
@@ -220,13 +192,17 @@ def timer_loop(icon):
             log.info("Sleep/wake detected (gap=%.0fs)", gap)
             if gap >= AWAY_RESET_SECONDS:
                 elapsed = 0
+                last_elapsed_tick_at = now
                 log.info("Sleep duration %.0fs >= %ds, resetting timer", gap, AWAY_RESET_SECONDS)
 
-        update_tray_title(icon)
+        # Check wall-clock time since last elapsed increment (catches sleep/lock/pause)
+        away_secs = now - last_elapsed_tick_at
+        if away_secs >= AWAY_RESET_SECONDS and elapsed > 0:
+            elapsed = 0
+            last_elapsed_tick_at = now
+            log.info("Away for %.0fs >= %ds, resetting timer", away_secs, AWAY_RESET_SECONDS)
 
-        if is_screen_locked():
-            # Screen is locked — pause silently
-            continue
+        update_tray_title(icon)
 
         if paused:
             continue
@@ -235,6 +211,7 @@ def timer_loop(icon):
             continue
 
         elapsed += 1
+        last_elapsed_tick_at = now
 
         if elapsed >= WORK_SECONDS:
             elapsed = 0
@@ -411,8 +388,6 @@ def api_help():
 @api_app.route("/status")
 def api_status():
     remaining = max(0, WORK_SECONDS - elapsed)
-    lock_epoch = int(screen_locked_at) if screen_locked_at else 0
-    lock_fmt = time.strftime("%d-%b-%Y %H:%M:%S", time.localtime(screen_locked_at)) if screen_locked_at else "0"
     wake_epoch = int(last_wake_at) if last_wake_at else 0
     wake_fmt = time.strftime("%d-%b-%Y %H:%M:%S", time.localtime(last_wake_at)) if last_wake_at else "0"
     return jsonify({
@@ -421,8 +396,6 @@ def api_status():
         "remaining_seconds": remaining,
         "remaining": f"{remaining // 60:02d}:{remaining % 60:02d}",
         "elapsed_seconds": elapsed,
-        "last_screen_lock_epoch": lock_epoch,
-        "last_screen_lock_time": lock_fmt,
         "last_wake_epoch": wake_epoch,
         "last_wake_time": wake_fmt,
     })
@@ -440,6 +413,7 @@ def api_take_break():
 @api_app.route("/reset", methods=["POST"])
 def api_reset():
     reset_timer(icon_ref[0])
+    log.info("API: timer reset")
     return jsonify({"ok": True})
 
 
@@ -448,6 +422,7 @@ def api_pause():
     global paused
     if not paused:
         on_pause_resume(icon_ref[0], None)
+        log.info("API: timer paused")
     return jsonify({"ok": True, "paused": paused})
 
 
@@ -456,6 +431,7 @@ def api_resume():
     global paused
     if paused:
         on_pause_resume(icon_ref[0], None)
+        log.info("API: timer resumed")
     return jsonify({"ok": True, "paused": paused})
 
 
